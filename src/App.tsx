@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import rainAudio from "./assets/sound/rain-1.mp3";
+import thunderAudio from "./assets/sound/thunder-1.mp3";
 import "./App.css";
 
 type IconName =
@@ -127,6 +128,15 @@ function createNoiseBuffer(context: AudioContext) {
   return buffer;
 }
 
+async function loadAudioBuffer(context: AudioContext, sourceUrl: string) {
+  try {
+    const response = await fetch(sourceUrl);
+    return await context.decodeAudioData(await response.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
 function createLoopableBuffer(
   context: AudioContext,
   sourceBuffer: AudioBuffer,
@@ -174,6 +184,14 @@ function App() {
   const masterGainRef = useRef<GainNode | null>(null);
   const audioLayersRef = useRef<Record<string, AudioLayer>>({});
   const rainAudioRef = useRef<HTMLAudioElement | null>(null);
+  const thunderBufferRef = useRef<AudioBuffer | null>(null);
+  const thunderGainRef = useRef<GainNode | null>(null);
+  const thunderSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const thunderTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const thunderEnabledRef = useRef(
+    initialSounds.some((sound) => sound.id === "storm" && sound.volume > 0),
+  );
+  const scheduleThunderRef = useRef<() => void>(() => undefined);
   const isPlayingRef = useRef(false);
   const togglePlaybackRef = useRef<() => Promise<void>>(() =>
     Promise.resolve(),
@@ -184,7 +202,29 @@ function App() {
     [sounds],
   );
 
+  const clearThunder = () => {
+    if (thunderTimeoutRef.current) {
+      clearTimeout(thunderTimeoutRef.current);
+      thunderTimeoutRef.current = null;
+    }
+    if (thunderSourceRef.current) {
+      try {
+        thunderSourceRef.current.stop();
+      } catch {
+        return;
+      }
+      thunderSourceRef.current = null;
+    }
+  };
   const updateSoundVolume = (id: string, volume: number) => {
+    if (id === "storm") {
+      thunderEnabledRef.current = volume > 0;
+      if (volume === 0) {
+        clearThunder();
+      } else if (isPlayingRef.current) {
+        scheduleThunderRef.current();
+      }
+    }
     setSounds((currentSounds) =>
       currentSounds.map((sound) =>
         sound.id === id ? { ...sound, volume } : sound,
@@ -219,6 +259,13 @@ function App() {
         0.04,
       );
     });
+    const thunderSound = sounds.find((sound) => sound.id === "storm");
+    thunderEnabledRef.current = thunderSound ? thunderSound.volume > 0 : false;
+    thunderGainRef.current?.gain.setTargetAtTime(
+      thunderSound ? thunderSound.volume / 100 : 0,
+      audioContextRef.current?.currentTime ?? 0,
+      0.04,
+    );
   }, [masterVolume, sounds]);
 
   useEffect(() => {
@@ -226,6 +273,7 @@ function App() {
 
     return () => {
       Object.values(audioLayers).forEach(({ source }) => source.stop());
+      clearThunder();
       rainAudioRef.current?.pause();
       rainAudioRef.current = null;
       audioContextRef.current?.close();
@@ -254,20 +302,19 @@ function App() {
         await rainAudioElement.play();
       }
 
-      let rainBuffer: AudioBuffer | null;
-      try {
-        const response = await fetch(rainAudio);
-        rainBuffer = await context.decodeAudioData(
-          await response.arrayBuffer(),
-        );
-      } catch {
-        rainBuffer = null;
-      }
+      const [rainBuffer, thunderBuffer] = await Promise.all([
+        loadAudioBuffer(context, rainAudio),
+        loadAudioBuffer(context, thunderAudio),
+      ]);
+      thunderBufferRef.current = thunderBuffer;
       const loopableRainBuffer = rainBuffer
         ? createLoopableBuffer(context, rainBuffer)
         : null;
 
       sounds.forEach((sound) => {
+        if (sound.id === "storm") {
+          return;
+        }
         const source = context.createBufferSource();
         const filter = context.createBiquadFilter();
         const gain = context.createGain();
@@ -286,6 +333,48 @@ function App() {
         audioLayersRef.current[sound.id] = { source, filter, gain };
       });
 
+      if (thunderBuffer) {
+        const thunderFilter = context.createBiquadFilter();
+        const thunderGain = context.createGain();
+        const thunderVolume =
+          sounds.find((sound) => sound.id === "storm")?.volume ?? 0;
+        thunderFilter.type = "lowpass";
+        thunderFilter.frequency.value = 900;
+        thunderGain.gain.value = thunderVolume / 100;
+        thunderFilter.connect(thunderGain).connect(masterGain);
+        thunderGainRef.current = thunderGain;
+
+        const scheduleThunder = () => {
+          if (thunderTimeoutRef.current || !thunderEnabledRef.current) {
+            return;
+          }
+          thunderTimeoutRef.current = setTimeout(
+            () => {
+              thunderTimeoutRef.current = null;
+              if (
+                !thunderEnabledRef.current ||
+                context.state !== "running" ||
+                !thunderBufferRef.current
+              ) {
+                return;
+              }
+              const source = context.createBufferSource();
+              source.buffer = thunderBufferRef.current;
+              source.connect(thunderFilter);
+              source.onended = () => {
+                thunderSourceRef.current = null;
+                scheduleThunder();
+              };
+              thunderSourceRef.current = source;
+              source.start();
+            },
+            10000 + Math.random() * 10000,
+          );
+        };
+        scheduleThunderRef.current = scheduleThunder;
+        scheduleThunder();
+      }
+
       setIsPlaying(true);
       return;
     }
@@ -294,8 +383,10 @@ function App() {
     if (context.state === "suspended") {
       await context.resume();
       await rainAudioRef.current?.play();
+      scheduleThunderRef.current();
       setIsPlaying(true);
     } else {
+      clearThunder();
       rainAudioRef.current?.pause();
       await context.suspend();
       setIsPlaying(false);

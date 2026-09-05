@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import rainAudio from "./assets/sound/rain-1.mp3";
 import "./App.css";
 
 type IconName =
@@ -118,6 +119,42 @@ function createNoiseBuffer(context: AudioContext) {
   return buffer;
 }
 
+function createLoopableBuffer(
+  context: AudioContext,
+  sourceBuffer: AudioBuffer,
+) {
+  const fadeLength = Math.min(
+    Math.floor(context.sampleRate * 0.12),
+    Math.floor(sourceBuffer.length / 3),
+  );
+  const loopBuffer = context.createBuffer(
+    sourceBuffer.numberOfChannels,
+    sourceBuffer.length,
+    sourceBuffer.sampleRate,
+  );
+  const stableLength = sourceBuffer.length - fadeLength;
+
+  for (
+    let channelIndex = 0;
+    channelIndex < sourceBuffer.numberOfChannels;
+    channelIndex += 1
+  ) {
+    const sourceChannel = sourceBuffer.getChannelData(channelIndex);
+    const loopChannel = loopBuffer.getChannelData(channelIndex);
+    loopChannel.set(sourceChannel.subarray(fadeLength), 0);
+
+    for (let index = 0; index < fadeLength; index += 1) {
+      const progress = index / fadeLength;
+      const tail = sourceChannel[stableLength + index];
+      const head = sourceChannel[index];
+      loopChannel[stableLength + index] =
+        tail * (1 - progress) + head * progress;
+    }
+  }
+
+  return loopBuffer;
+}
+
 function App() {
   const [sounds, setSounds] = useState(initialSounds);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -178,11 +215,28 @@ function App() {
       audioContextRef.current = context;
       masterGainRef.current = masterGain;
 
+      let rainBuffer: AudioBuffer | null;
+      try {
+        const response = await fetch(rainAudio);
+        rainBuffer = await context.decodeAudioData(
+          await response.arrayBuffer(),
+        );
+      } catch {
+        rainBuffer = null;
+      }
+
+      const loopableRainBuffer = rainBuffer
+        ? createLoopableBuffer(context, rainBuffer)
+        : null;
+
       sounds.forEach((sound) => {
         const source = context.createBufferSource();
         const filter = context.createBiquadFilter();
         const gain = context.createGain();
-        source.buffer = createNoiseBuffer(context);
+        source.buffer =
+          sound.id === "rain" && loopableRainBuffer
+            ? loopableRainBuffer
+            : createNoiseBuffer(context);
         source.loop = true;
         filter.type = sound.id === "rain" ? "bandpass" : "lowpass";
         filter.frequency.value =

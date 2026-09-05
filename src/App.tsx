@@ -127,6 +127,42 @@ function createNoiseBuffer(context: AudioContext) {
   return buffer;
 }
 
+function createLoopableBuffer(
+  context: AudioContext,
+  sourceBuffer: AudioBuffer,
+) {
+  const fadeLength = Math.min(
+    Math.floor(context.sampleRate * 0.12),
+    Math.floor(sourceBuffer.length / 3),
+  );
+  const loopBuffer = context.createBuffer(
+    sourceBuffer.numberOfChannels,
+    sourceBuffer.length,
+    sourceBuffer.sampleRate,
+  );
+  const stableLength = sourceBuffer.length - fadeLength;
+
+  for (
+    let channelIndex = 0;
+    channelIndex < sourceBuffer.numberOfChannels;
+    channelIndex += 1
+  ) {
+    const sourceChannel = sourceBuffer.getChannelData(channelIndex);
+    const loopChannel = loopBuffer.getChannelData(channelIndex);
+    loopChannel.set(sourceChannel.subarray(fadeLength), 0);
+
+    for (let index = 0; index < fadeLength; index += 1) {
+      const progress = index / fadeLength;
+      const tail = sourceChannel[stableLength + index];
+      const head = sourceChannel[index];
+      loopChannel[stableLength + index] =
+        tail * (1 - progress) + head * progress;
+    }
+  }
+
+  return loopBuffer;
+}
+
 function App() {
   const [sounds, setSounds] = useState(initialSounds);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -138,7 +174,6 @@ function App() {
   const masterGainRef = useRef<GainNode | null>(null);
   const audioLayersRef = useRef<Record<string, AudioLayer>>({});
   const rainAudioRef = useRef<HTMLAudioElement | null>(null);
-  const rainGainRef = useRef<GainNode | null>(null);
   const isPlayingRef = useRef(false);
   const togglePlaybackRef = useRef<() => Promise<void>>(() =>
     Promise.resolve(),
@@ -184,14 +219,6 @@ function App() {
         0.04,
       );
     });
-    const rainSound = sounds.find((sound) => sound.id === "rain");
-    if (rainSound) {
-      rainGainRef.current?.gain.setTargetAtTime(
-        rainSound.volume / 100,
-        audioContextRef.current?.currentTime ?? 0,
-        0.04,
-      );
-    }
   }, [masterVolume, sounds]);
 
   useEffect(() => {
@@ -219,36 +246,45 @@ function App() {
       if (rainSound && rainAudioElement) {
         rainAudioElement.loop = true;
         rainAudioElement.preload = "auto";
-        const rainSource = context.createMediaElementSource(rainAudioElement);
-        const rainFilter = context.createBiquadFilter();
-        const rainGain = context.createGain();
-        rainFilter.type = "bandpass";
-        rainFilter.frequency.value = 1800;
-        rainFilter.Q.value = 0.7;
-        rainGain.gain.value = rainSound.volume / 100;
-        rainSource.connect(rainFilter).connect(rainGain).connect(masterGain);
-        rainAudioRef.current = rainAudioElement;
-        rainGainRef.current = rainGain;
+        const sessionSource =
+          context.createMediaElementSource(rainAudioElement);
+        const sessionGain = context.createGain();
+        sessionGain.gain.value = 0;
+        sessionSource.connect(sessionGain).connect(masterGain);
         await rainAudioElement.play();
       }
 
-      sounds
-        .filter((sound) => sound.id !== "rain")
-        .forEach((sound) => {
-          const source = context.createBufferSource();
-          const filter = context.createBiquadFilter();
-          const gain = context.createGain();
-          source.buffer = createNoiseBuffer(context);
-          source.loop = true;
-          filter.type = sound.id === "rain" ? "bandpass" : "lowpass";
-          filter.frequency.value =
-            sound.id === "storm" ? 260 : sound.id === "wind" ? 700 : 1800;
-          filter.Q.value = sound.id === "rain" ? 0.7 : 0.4;
-          gain.gain.value = sound.volume / 100;
-          source.connect(filter).connect(gain).connect(masterGain);
-          source.start();
-          audioLayersRef.current[sound.id] = { source, filter, gain };
-        });
+      let rainBuffer: AudioBuffer | null;
+      try {
+        const response = await fetch(rainAudio);
+        rainBuffer = await context.decodeAudioData(
+          await response.arrayBuffer(),
+        );
+      } catch {
+        rainBuffer = null;
+      }
+      const loopableRainBuffer = rainBuffer
+        ? createLoopableBuffer(context, rainBuffer)
+        : null;
+
+      sounds.forEach((sound) => {
+        const source = context.createBufferSource();
+        const filter = context.createBiquadFilter();
+        const gain = context.createGain();
+        source.buffer =
+          sound.id === "rain" && loopableRainBuffer
+            ? loopableRainBuffer
+            : createNoiseBuffer(context);
+        source.loop = true;
+        filter.type = sound.id === "rain" ? "bandpass" : "lowpass";
+        filter.frequency.value =
+          sound.id === "storm" ? 260 : sound.id === "wind" ? 700 : 1800;
+        filter.Q.value = sound.id === "rain" ? 0.7 : 0.4;
+        gain.gain.value = sound.volume / 100;
+        source.connect(filter).connect(gain).connect(masterGain);
+        source.start();
+        audioLayersRef.current[sound.id] = { source, filter, gain };
+      });
 
       setIsPlaying(true);
       return;

@@ -3,6 +3,13 @@
   display: flex;
   background: var(--surface);
 }
+.media-audio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
 .sidebar {
   width: 252px;
   flex: 0 0 252px;

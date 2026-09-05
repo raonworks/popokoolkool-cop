@@ -29,6 +29,14 @@ type Sound = {
   icon: IconName;
 };
 
+declare global {
+  interface Window {
+    AndroidMediaSession?: {
+      setPlaying: (playing: boolean) => void;
+    };
+  }
+}
+
 type AudioLayer = {
   source: AudioBufferSourceNode;
   filter: BiquadFilterNode;
@@ -119,42 +127,6 @@ function createNoiseBuffer(context: AudioContext) {
   return buffer;
 }
 
-function createLoopableBuffer(
-  context: AudioContext,
-  sourceBuffer: AudioBuffer,
-) {
-  const fadeLength = Math.min(
-    Math.floor(context.sampleRate * 0.12),
-    Math.floor(sourceBuffer.length / 3),
-  );
-  const loopBuffer = context.createBuffer(
-    sourceBuffer.numberOfChannels,
-    sourceBuffer.length,
-    sourceBuffer.sampleRate,
-  );
-  const stableLength = sourceBuffer.length - fadeLength;
-
-  for (
-    let channelIndex = 0;
-    channelIndex < sourceBuffer.numberOfChannels;
-    channelIndex += 1
-  ) {
-    const sourceChannel = sourceBuffer.getChannelData(channelIndex);
-    const loopChannel = loopBuffer.getChannelData(channelIndex);
-    loopChannel.set(sourceChannel.subarray(fadeLength), 0);
-
-    for (let index = 0; index < fadeLength; index += 1) {
-      const progress = index / fadeLength;
-      const tail = sourceChannel[stableLength + index];
-      const head = sourceChannel[index];
-      loopChannel[stableLength + index] =
-        tail * (1 - progress) + head * progress;
-    }
-  }
-
-  return loopBuffer;
-}
-
 function App() {
   const [sounds, setSounds] = useState(initialSounds);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -165,6 +137,12 @@ function App() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
   const audioLayersRef = useRef<Record<string, AudioLayer>>({});
+  const rainAudioRef = useRef<HTMLAudioElement | null>(null);
+  const rainGainRef = useRef<GainNode | null>(null);
+  const isPlayingRef = useRef(false);
+  const togglePlaybackRef = useRef<() => Promise<void>>(() =>
+    Promise.resolve(),
+  );
 
   const activeSounds = useMemo(
     () => sounds.filter((sound) => sound.volume > 0).length,
@@ -178,6 +156,17 @@ function App() {
       ),
     );
   };
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+    if (audioContextRef.current) {
+      window.AndroidMediaSession?.setPlaying(isPlaying);
+    }
+
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+    }
+  }, [isPlaying]);
 
   useEffect(() => {
     if (masterGainRef.current) {
@@ -195,6 +184,14 @@ function App() {
         0.04,
       );
     });
+    const rainSound = sounds.find((sound) => sound.id === "rain");
+    if (rainSound) {
+      rainGainRef.current?.gain.setTargetAtTime(
+        rainSound.volume / 100,
+        audioContextRef.current?.currentTime ?? 0,
+        0.04,
+      );
+    }
   }, [masterVolume, sounds]);
 
   useEffect(() => {
@@ -202,6 +199,8 @@ function App() {
 
     return () => {
       Object.values(audioLayers).forEach(({ source }) => source.stop());
+      rainAudioRef.current?.pause();
+      rainAudioRef.current = null;
       audioContextRef.current?.close();
     };
   }, []);
@@ -215,38 +214,41 @@ function App() {
       audioContextRef.current = context;
       masterGainRef.current = masterGain;
 
-      let rainBuffer: AudioBuffer | null;
-      try {
-        const response = await fetch(rainAudio);
-        rainBuffer = await context.decodeAudioData(
-          await response.arrayBuffer(),
-        );
-      } catch {
-        rainBuffer = null;
+      const rainSound = sounds.find((sound) => sound.id === "rain");
+      const rainAudioElement = rainAudioRef.current;
+      if (rainSound && rainAudioElement) {
+        rainAudioElement.loop = true;
+        rainAudioElement.preload = "auto";
+        const rainSource = context.createMediaElementSource(rainAudioElement);
+        const rainFilter = context.createBiquadFilter();
+        const rainGain = context.createGain();
+        rainFilter.type = "bandpass";
+        rainFilter.frequency.value = 1800;
+        rainFilter.Q.value = 0.7;
+        rainGain.gain.value = rainSound.volume / 100;
+        rainSource.connect(rainFilter).connect(rainGain).connect(masterGain);
+        rainAudioRef.current = rainAudioElement;
+        rainGainRef.current = rainGain;
+        await rainAudioElement.play();
       }
 
-      const loopableRainBuffer = rainBuffer
-        ? createLoopableBuffer(context, rainBuffer)
-        : null;
-
-      sounds.forEach((sound) => {
-        const source = context.createBufferSource();
-        const filter = context.createBiquadFilter();
-        const gain = context.createGain();
-        source.buffer =
-          sound.id === "rain" && loopableRainBuffer
-            ? loopableRainBuffer
-            : createNoiseBuffer(context);
-        source.loop = true;
-        filter.type = sound.id === "rain" ? "bandpass" : "lowpass";
-        filter.frequency.value =
-          sound.id === "storm" ? 260 : sound.id === "wind" ? 700 : 1800;
-        filter.Q.value = sound.id === "rain" ? 0.7 : 0.4;
-        gain.gain.value = sound.volume / 100;
-        source.connect(filter).connect(gain).connect(masterGain);
-        source.start();
-        audioLayersRef.current[sound.id] = { source, filter, gain };
-      });
+      sounds
+        .filter((sound) => sound.id !== "rain")
+        .forEach((sound) => {
+          const source = context.createBufferSource();
+          const filter = context.createBiquadFilter();
+          const gain = context.createGain();
+          source.buffer = createNoiseBuffer(context);
+          source.loop = true;
+          filter.type = sound.id === "rain" ? "bandpass" : "lowpass";
+          filter.frequency.value =
+            sound.id === "storm" ? 260 : sound.id === "wind" ? 700 : 1800;
+          filter.Q.value = sound.id === "rain" ? 0.7 : 0.4;
+          gain.gain.value = sound.volume / 100;
+          source.connect(filter).connect(gain).connect(masterGain);
+          source.start();
+          audioLayersRef.current[sound.id] = { source, filter, gain };
+        });
 
       setIsPlaying(true);
       return;
@@ -255,15 +257,101 @@ function App() {
     const context = audioContextRef.current;
     if (context.state === "suspended") {
       await context.resume();
+      await rainAudioRef.current?.play();
       setIsPlaying(true);
     } else {
+      rainAudioRef.current?.pause();
       await context.suspend();
       setIsPlaying(false);
     }
   };
 
+  useEffect(() => {
+    togglePlaybackRef.current = togglePlayback;
+  });
+
+  useEffect(() => {
+    const handleNativePlay = () => {
+      if (!isPlayingRef.current) {
+        void togglePlaybackRef.current();
+      }
+    };
+    const handleNativePause = () => {
+      if (isPlayingRef.current) {
+        void togglePlaybackRef.current();
+      }
+    };
+
+    window.addEventListener("native-media-play", handleNativePlay);
+    window.addEventListener("native-media-pause", handleNativePause);
+
+    return () => {
+      window.removeEventListener("native-media-play", handleNativePlay);
+      window.removeEventListener("native-media-pause", handleNativePause);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      !("mediaSession" in navigator) ||
+      typeof MediaMetadata === "undefined"
+    ) {
+      return;
+    }
+
+    const mediaSession = navigator.mediaSession;
+    mediaSession.metadata = new MediaMetadata({
+      title: "Rainy window ritual",
+      artist: "포포쿨쿨",
+      album: "Sleep sounds",
+    });
+
+    const setActionHandler = (
+      action: MediaSessionAction,
+      handler: MediaSessionActionHandler | null,
+    ) => {
+      try {
+        mediaSession.setActionHandler(action, handler);
+      } catch {
+        return;
+      }
+    };
+
+    setActionHandler("play", () => {
+      if (!isPlayingRef.current) {
+        void togglePlaybackRef.current();
+      }
+    });
+    setActionHandler("pause", () => {
+      if (isPlayingRef.current) {
+        void togglePlaybackRef.current();
+      }
+    });
+    setActionHandler("stop", () => {
+      if (isPlayingRef.current) {
+        void togglePlaybackRef.current();
+      }
+    });
+
+    return () => {
+      mediaSession.metadata = null;
+      setActionHandler("play", null);
+      setActionHandler("pause", null);
+      setActionHandler("stop", null);
+    };
+  }, []);
+
   return (
     <div className="app-shell">
+      <audio
+        ref={rainAudioRef}
+        className="media-audio"
+        src={rainAudio}
+        preload="auto"
+        loop
+        playsInline
+        aria-hidden="true"
+      />
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
@@ -355,7 +443,7 @@ function App() {
                 <span className="live-dot"></span> Your quiet space
               </p>
               <h1>
-                Settle in,
+                Settle!! in,
                 <br />
                 <em>sleep softly.</em>
               </h1>

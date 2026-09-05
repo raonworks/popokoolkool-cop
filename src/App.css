@@ -1,5 +1,5 @@
 .app-shell {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   background: var(--surface);
 }
@@ -186,6 +186,7 @@
 .main-content {
   flex: 1;
   min-width: 0;
+  min-height: 100dvh;
   background: var(--surface);
 }
 .topbar {
@@ -816,31 +817,57 @@ input[type="range"]::-webkit-slider-thumb {
     display: block;
   }
   .sidebar {
+    position: fixed;
+    z-index: 20;
+    right: 0;
+    bottom: 0;
+    left: 0;
     width: 100%;
-    padding: 17px 18px;
+    height: calc(68px + env(safe-area-inset-bottom));
+    padding: 0 12px env(safe-area-inset-bottom);
+    flex-direction: row;
+    align-items: center;
+    box-shadow: 0 -8px 24px rgba(23, 59, 57, 0.12);
   }
   .brand {
-    padding: 0 4px 15px;
+    display: none;
   }
   .profile-card {
     display: none;
   }
   .main-nav {
+    width: 100%;
+    height: 68px;
     flex-direction: row;
-    overflow-x: auto;
+    align-items: stretch;
+    justify-content: space-around;
+    gap: 4px;
   }
   .nav-label,
   .sidebar-footer {
     display: none;
   }
   .nav-item {
+    min-height: 44px;
+    flex: 1 1 0;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
     white-space: nowrap;
     width: auto;
-    padding: 9px 11px;
+    padding: 6px 4px;
+    text-align: center;
+    font-size: 9px;
+  }
+  .nav-item.active {
+    box-shadow: inset 0 2px var(--mint);
+  }
+  .nav-count {
+    display: none;
   }
   .topbar {
-    height: 62px;
-    padding: 0 18px;
+    height: calc(62px + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) 18px 0;
   }
   .breadcrumb {
     display: none;
@@ -853,7 +880,7 @@ input[type="range"]::-webkit-slider-thumb {
     display: none;
   }
   .content-wrap {
-    padding: 31px 18px 25px;
+    padding: 31px 18px calc(94px + env(safe-area-inset-bottom));
   }
   .intro-row {
     align-items: start;
@@ -878,12 +905,45 @@ input[type="range"]::-webkit-slider-thumb {
     gap: 7px;
   }
 }
+@media (max-width: 380px) {
+  .content-wrap {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+  .player-controls {
+    padding-right: 17px;
+    padding-left: 17px;
+  }
+  .timer-panel,
+  .stats-panel {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+  .timer-options {
+    gap: 4px;
+  }
+  .timer-options button {
+    padding-right: 7px;
+    padding-left: 7px;
+  }
+}
 @media (max-width: 430px) {
   h1 {
     font-size: 40px;
   }
   .player-head {
     gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .player-head > div {
+    min-width: 0;
+  }
+  .player-head h2 {
+    overflow-wrap: anywhere;
+  }
+  .sound-info {
+    min-width: 0;
   }
   .save-button {
     font-size: 0;
@@ -915,5 +975,6 @@ input[type="range"]::-webkit-slider-thumb {
   }
   .sound-info p {
     white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
